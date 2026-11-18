@@ -413,15 +413,17 @@
 #endif
 #endif
 
-// SD transport. Silkscreen (4-bit) and X4 Pro (1-bit) are wired for SDMMC; SdFat
-// can't drive SDIO, so they get a native esp-idf SDMMC block device behind
-// SDCardManager. Every other board stays on SdFat-over-SPI. The consumer's build
-// must define USE_BLOCK_DEVICE_INTERFACE=1 for the SdFat FsVolume these mount on.
+// SD transport. Silkscreen (4-bit), X4 Pro (1-bit), and Murphy M3 (4-bit) are
+// wired for SDMMC; SdFat can't drive SDIO, so they get a native esp-idf SDMMC
+// block device behind SDCardManager. Every other board stays on SdFat-over-SPI.
+// The consumer's build must define USE_BLOCK_DEVICE_INTERFACE=1 for the SdFat
+// FsVolume these mount on.
 // Override with -DFREEINK_SD_SDMMC=0/1.
 #ifndef FREEINK_SD_SDMMC
 #define FREEINK_SD_SDMMC                                                                            \
   (FREEINK_DEVICE_SILKSCREEN || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO || \
-   FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO)
+   FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_WS397 ||                       \
+   FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO)
 #endif
 
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
@@ -1239,7 +1241,14 @@ constexpr BoardProfile MURPHY_M3 = {
     240,
     {4, 3, 5, 6, 7, 8, PIN_UNASSIGNED},
     0,  // displaySpiHz: 0 -> Murphy UC8253 driver default (4 MHz)
-    {39, 13, 40, 10, PIN_UNASSIGNED, true, 0},
+    // SD is 4-bit SDMMC (sdmmc field below) on the pins recovered from the OEM
+    // firmware and the community reverse schematic (crosspoint-reader/Murphy):
+    // CLK=16 CMD=17 D0=15 D1=14 D2=21 D3=18, gated by SD_POWER GPIO10 held LOW
+    // while the card is powered. These SPI pins are unused; the earlier guess
+    // (SCLK39/MISO13/MOSI40/CS10) predates the OEM audio recovery — the I2S pins
+    // (39/40/41/42) and shared I2C SDA13 belong to audio/touch, and GPIO10 is the
+    // power gate, not a chip select.
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, false, 0, false},
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     9,               // batteryAdc: stock firmware samples analogRead(9) for battery voltage
     PIN_UNASSIGNED,  // batteryChargeStatus: not identified
@@ -1247,13 +1256,10 @@ constexpr BoardProfile MURPHY_M3 = {
     PIN_UNASSIGNED,
     {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 398, false, 0, true, false},
     {48, 25000, 10, true},
-    // NOTE: the SPI SD pin guess above (39/13/40) predates the OEM firmware
-    // audio recovery and conflicts with the proven I2S pins (39/40/41/42) and
-    // shared I2C (13). Audio is the verified owner of those pins.
     MURPHY_AUDIO,
     NO_LEDS,
     NO_FLIP,
-    NO_SDMMC,
+    {16, 17, 15, 14, 21, 18, 4},  // SDMMC 4-bit: CLK16 CMD17 D0=15 D1=14 D2=21 D3=18
     NO_GAUGE};
 
 // --- Murphy M4 — ESP32-S3R8, SSD1677 (480x800 portrait), FT6336U touch, dual frontlight ---
