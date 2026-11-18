@@ -1418,9 +1418,22 @@ void InputManager::beginTouch() {
     // CHSC6x: I2C bus only. The IRQ is left unconfigured — it's a brief pulse on
     // this controller, so detection polls I2C and gates on the frame's touch bit
     // instead (see decodeChsc6xFrame / updateTouchFromIrq).
+    //
+    // Power the touch rail first on boards that gate it (Murphy M3: GPIO45,
+    // active-low). gpio_hold_dis first: the sleep path holds this pin at its
+    // OFF level, the hold survives the deep-sleep wake reset, and the ON write
+    // does nothing until the hold is released.
+    if (t.powerEnable >= 0) {
+      gpio_hold_dis(static_cast<gpio_num_t>(t.powerEnable));
+      pinMode(t.powerEnable, OUTPUT);
+      digitalWrite(t.powerEnable, t.powerEnableActiveHigh ? HIGH : LOW);
+      delay(50);
+    }
     if (t.sda >= 0 && t.scl >= 0 && t.i2cAddress != 0) {
       Wire.begin(t.sda, t.scl, 100000);
-      Wire.setTimeOut(4);
+      // A 16-byte frame at 100 kHz is about 1.7 ms on the wire; 4 ms left no
+      // room for clock stretching.
+      Wire.setTimeOut(10);
       touchDataEnabled = true;
     }
     return;

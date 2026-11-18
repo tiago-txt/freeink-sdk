@@ -1233,7 +1233,10 @@ constexpr BoardProfile PAPER_MONO = {
 constexpr BoardProfile MURPHY_M3 = {
     Board::MurphyM3,
     "murphy_m3",
-    InputStyle::DigitalFiveKey,
+    // The bottom button (GPIO0) is shared: short press = CONFIRM, hold >=
+    // CONFIRM_POWER_HOLD_MS = POWER. DigitalConfirmPowerHold synthesizes that
+    // pair; DigitalFiveKey would read the same pin as both buttons at once.
+    InputStyle::DigitalConfirmPowerHold,
     DisplayController::UC8253,
     // Framebuffer is landscape 416x240: the panel is a 240x416 controller held
     // rotated 90°, and the Murphy driver rotates each plane into controller RAM.
@@ -1251,10 +1254,22 @@ constexpr BoardProfile MURPHY_M3 = {
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, false, 0, false},
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     9,               // batteryAdc: stock firmware samples analogRead(9) for battery voltage
-    PIN_UNASSIGNED,  // batteryChargeStatus: not identified
-    3.030303f,       // stock firmware scales ADC by 0.0016 / 0.33, implying a 1:0.33 divider
+    PIN_UNASSIGNED,  // batteryChargeStatus: the TP4054's CHRG output drives only its LED
+    // 680k/680k divider, measured on hardware (2.07 V at the pin on a charging
+    // 4.15 V pack). The stock-firmware-derived 3.0303 over-reads by ~50%.
+    2.0f,
     PIN_UNASSIGNED,
-    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 398, false, 0, true, false},
+    // CHSC6x at 0x2e. GPIO45 is not a controller reset: it is an active-LOW gate
+    // for the rail that feeds both the touch controller and the ES8388, and with
+    // it high neither answers on I2C. It is carried as powerEnable (the sleep
+    // path cuts it via PowerManager's holdRailOff, beginTouch re-powers it).
+    // Mount: the digitizer reports raw X over the panel's short axis and raw Y
+    // over its long axis, while the framebuffer is landscape 416x240. swapXY
+    // puts mapped X on the long axis, so the ranges below are in post-swap
+    // order; flipY validated by a four-corner tap test.
+    {TouchController::Chsc6x, 13, 12, 44, PIN_UNASSIGNED, 0x2e, 24, 398, 24, 224, false, 0, true, false,
+     /*powerEnable=*/45, /*swapXY=*/true, /*flipX=*/false, /*flipY=*/true, /*hasHomeKey=*/false,
+     /*powerEnableActiveHigh=*/false},
     {48, 25000, 10, true},
     MURPHY_AUDIO,
     NO_LEDS,
