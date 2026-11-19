@@ -1263,12 +1263,13 @@ constexpr BoardProfile MURPHY_M3 = {
     // for the rail that feeds both the touch controller and the ES8388, and with
     // it high neither answers on I2C. It is carried as powerEnable (the sleep
     // path cuts it via PowerManager's holdRailOff, beginTouch re-powers it).
-    // Mount: the digitizer reports raw X over the panel's short axis and raw Y
-    // over its long axis, while the framebuffer is landscape 416x240. swapXY
-    // puts mapped X on the long axis, so the ranges below are in post-swap
-    // order; flipY validated by a four-corner tap test.
-    {TouchController::Chsc6x, 13, 12, 44, PIN_UNASSIGNED, 0x2e, 24, 398, 24, 224, false, 0, true, false,
-     /*powerEnable=*/45, /*swapXY=*/true, /*flipX=*/false, /*flipY=*/true, /*hasHomeKey=*/false,
+    // Mount: the digitizer reports raw X over the panel's SHORT axis (24..224)
+    // and raw Y over its LONG axis (24..398). CrossInk's tapToLogical expects
+    // panel-native landscape coords directly, so no swap: raw X maps to display
+    // X, raw Y to display Y. flipY validated on hardware: a physical top tap
+    // landed at display y==height before the flip.
+    {TouchController::Chsc6x, 13, 12, 44, PIN_UNASSIGNED, 0x2e, 24, 224, 24, 398, false, 0, true, false,
+     /*powerEnable=*/45, /*swapXY=*/false, /*flipX=*/false, /*flipY=*/true, /*hasHomeKey=*/false,
      /*powerEnableActiveHigh=*/false},
     {48, 25000, 10, true},
     MURPHY_AUDIO,
@@ -2465,6 +2466,15 @@ inline void holdPowerRails() {
 #if FREEINK_DEVICE_METALIO_EINK4
   if (isMetalioEInk4()) freeink::metalio::ensureBooted();
 #endif
+  // Release the global deep-sleep pad latch first. PowerManager::deepSleep()
+  // enables gpio_deep_sleep_hold_en() so sleep-time rail levels survive deep
+  // sleep, and on ESP32-S3 the latch ALSO survives the wake reset: until it is
+  // disabled, every gpio_hold_dis() below (and in each rail's wake path —
+  // releaseSdRail(), the CHSC6x touch rail, FrontlightManager) is a no-op
+  // against a still-held pad, leaving rails stuck at their sleep OFF level
+  // after a wake. Power-on resets clear pad holds in hardware; only the wake
+  // path needs this. Harmless elsewhere: the latch is re-armed on each sleep.
+  gpio_deep_sleep_hold_dis();
   for (const int8_t pin : {ACTIVE.power.latch0, ACTIVE.power.latch1}) {
     if (pin < 0) continue;
     if (latchConflictsWithBus(pin)) {
