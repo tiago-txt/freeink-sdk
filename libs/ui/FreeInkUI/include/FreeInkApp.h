@@ -998,6 +998,15 @@ public:
     return interactions_.hitPublished(x, y, action, out);
   }
 
+  // Read-only view of the table the last render published. Diagnostics only:
+  // routePublished() is what input routing uses.
+  size_t publishedInteractionCount() const {
+    return interactions_.publishedCount();
+  }
+  const Interaction *publishedInteractions() const {
+    return interactions_.publishedData();
+  }
+
   // Drop a pending tap flash. Call from handlers that navigate to a different
   // screen: the tapped element no longer exists there, and an element on the
   // NEW screen with the same action/value would inherit the gray instead

@@ -1517,9 +1517,10 @@ uint8_t InputManager::serviceTouch() {
   // Long-press classification, beside the tap/swipe machinery it shares state
   // with. Fires once per contact, while the finger is still down.
   if (touchPressed && !touchMultiContactSequence && !touchMovedBeyondTapSlop && !touchLongPressFired &&
-      !touchSuppressed && now - touchDownPoint.timestamp >= TOUCH_LONG_PRESS_MS) {
+      !touchSuppressed && static_cast<long>(now - touchDownPoint.timestamp) >= static_cast<long>(TOUCH_LONG_PRESS_MS)) {
     touchLongPressFired = true;
     touchLongPressEvent = true;
+    LOG_DBG("TOUCH", "long-press fired age=%lu", static_cast<unsigned long>(now - touchDownPoint.timestamp));
   }
 
 #if FREEINK_TOUCH_CST816S
@@ -1555,7 +1556,14 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
         // Mapped panel-native coords at touch-down (raw-range units); used to
         // validate swap/flip mounting on new panels. Debug builds only.
         LOG_DBG("TOUCH", "CHSC6x down: x=%u y=%u", static_cast<unsigned>(point.x), static_cast<unsigned>(point.y));
-        touchDownPoint = point;  // first contact sample, used for tap routing
+        touchDownPoint = point;
+        // Stamp with this cycle's `now`, not decode's millis(): the I2C read
+        // alone takes ~2 ms at 100 kHz, so decode's stamp lands *after* the
+        // `now` the long-press classification compares against — the unsigned
+        // age underflowed to ~4.29e9 and fired a phantom long-press on every
+        // fresh touch, which touchSnapshotFrom then turned into a
+        // released-only event that suppressed the whole contact.
+        touchDownPoint.timestamp = now;
         touchUpPoint = point;
         touchMovedBeyondTapSlop = false;
         touchMovedBeyondTapReleaseSlop = false;
@@ -1578,6 +1586,7 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
     touchPressed = false;
     touchReleasedEvent = true;
     lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+    LOG_DBG("TOUCH", "CHSC6x release: heldMs=%lu", static_cast<unsigned long>(lastTouchHeldDurationMs));
   }
 }
 
@@ -1624,10 +1633,27 @@ bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, Touc
   // (digitizer rotated 90° vs the panel's native frame — raw frame is
   // X:byte[4] over the short axis, Y:bytes[5..6] over the long one), then the
   // per-axis flips. rawMin/Max describe the POST-swap display axes.
-  const uint16_t x = t.swapXY ? rawY : rawX;
-  const uint16_t y = t.swapXY ? rawX : rawY;
+  uint16_t x = t.swapXY ? rawY : rawX;
+  uint16_t y = t.swapXY ? rawX : rawY;
+  // Clamp instead of reject. The calibrated raw window is the *usable* span, not
+  // a validity gate: a tap on a corner/edge button lands a few counts outside it
+  // (the panel keeps sensing past the nominal range), and rejecting those frames
+  // silently swallowed exactly the edge taps the UI puts controls on. The
+  // mapper below already saturates, so clamping costs nothing and keeps the
+  // whole panel live. Wild values are still filtered by the sentinel checks
+  // above and by the touch-present bit.
   if (x < t.rawMinX || x > t.rawMaxX || y < t.rawMinY || y > t.rawMaxY) {
-    return false;
+    // Rate-limited so a finger resting on the bezel cannot flood the log.
+    static uint32_t lastEdgeLogMs = 0;
+    if (millis() - lastEdgeLogMs > 500) {
+      lastEdgeLogMs = millis();
+      LOG_DBG("TOUCH", "CHSC6x outside calibrated range: x=%u (%u..%u) y=%u (%u..%u) -> clamped", x, t.rawMinX,
+              t.rawMaxX, y, t.rawMinY, t.rawMaxY);
+    }
+    if (x < t.rawMinX) x = t.rawMinX;
+    if (x > t.rawMaxX) x = t.rawMaxX;
+    if (y < t.rawMinY) y = t.rawMinY;
+    if (y > t.rawMaxY) y = t.rawMaxY;
   }
   point.valid = true;
   // Panel-native coordinates (the calibrated raw range, in the touch panel's
