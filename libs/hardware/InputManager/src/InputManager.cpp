@@ -26,6 +26,9 @@
 #if FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
 #include <Logging.h>
 #endif
+#if FREEINK_TOUCH_CHSC6X && defined(ENABLE_SERIAL_LOG)
+#include <Logging.h>
+#endif
 #endif
 #if FREEINK_DEVICE_PAPERMONO
 #include <PaperMonoBoard.h>
@@ -1549,6 +1552,9 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
       if (!touchPressed) {
         touchPressed = true;
         touchPressedEvent = true;
+        // Mapped panel-native coords at touch-down (raw-range units); used to
+        // validate swap/flip mounting on new panels. Debug builds only.
+        LOG_DBG("TOUCH", "CHSC6x down: x=%u y=%u", static_cast<unsigned>(point.x), static_cast<unsigned>(point.y));
         touchDownPoint = point;  // first contact sample, used for tap routing
         touchUpPoint = point;
         touchMovedBeyondTapSlop = false;
@@ -1614,12 +1620,23 @@ bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, Touc
     return false;
   }
   const auto& t = BoardConfig::ACTIVE.touch;
+  // Mounting correction, same contract as every other backend: swapXY first
+  // (digitizer rotated 90° vs the panel's native frame — raw frame is
+  // X:byte[4] over the short axis, Y:bytes[5..6] over the long one), then the
+  // per-axis flips. rawMin/Max describe the POST-swap display axes.
+  const uint16_t x = t.swapXY ? rawY : rawX;
+  const uint16_t y = t.swapXY ? rawX : rawY;
+  if (x < t.rawMinX || x > t.rawMaxX || y < t.rawMinY || y > t.rawMaxY) {
+    return false;
+  }
   point.valid = true;
   // Panel-native coordinates (the calibrated raw range, in the touch panel's
   // own orientation); the app maps to its display/logical frame. See the touch
   // note in the README.
-  point.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
-  point.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+  point.x = mapTouchAxis(x, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+  point.y = mapTouchAxis(y, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+  if (t.flipX) point.x = t.rawMaxX - t.rawMinX - point.x;
+  if (t.flipY) point.y = t.rawMaxY - t.rawMinY - point.y;
   point.timestamp = millis();
   return true;
 }

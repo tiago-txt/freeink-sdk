@@ -1263,13 +1263,12 @@ constexpr BoardProfile MURPHY_M3 = {
     // for the rail that feeds both the touch controller and the ES8388, and with
     // it high neither answers on I2C. It is carried as powerEnable (the sleep
     // path cuts it via PowerManager's holdRailOff, beginTouch re-powers it).
-    // Mount: the digitizer reports raw X over the panel's SHORT axis (24..224)
-    // and raw Y over its LONG axis (24..398). CrossInk's tapToLogical expects
-    // panel-native landscape coords directly, so no swap: raw X maps to display
-    // X, raw Y to display Y. flipY validated on hardware: a physical top tap
-    // landed at display y==height before the flip.
-    {TouchController::Chsc6x, 13, 12, 44, PIN_UNASSIGNED, 0x2e, 24, 224, 24, 398, false, 0, true, false,
-     /*powerEnable=*/45, /*swapXY=*/false, /*flipX=*/false, /*flipY=*/true, /*hasHomeKey=*/false,
+    // Mount: the frame is X:byte[4] over the panel's SHORT axis (0..255) and
+    // Y:bytes[5..6] over its LONG axis (16-bit). The framebuffer is landscape
+    // 416x240, so swapXY puts mapped X on the long axis; the ranges below are
+    // in post-swap order. flipY from a four-corner tap test on the same glass.
+    {TouchController::Chsc6x, 13, 12, 44, PIN_UNASSIGNED, 0x2e, 24, 398, 24, 224, false, 0, true, false,
+     /*powerEnable=*/45, /*swapXY=*/true, /*flipX=*/false, /*flipY=*/true, /*hasHomeKey=*/false,
      /*powerEnableActiveHigh=*/false},
     {48, 25000, 10, true},
     MURPHY_AUDIO,
