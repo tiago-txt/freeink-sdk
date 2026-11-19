@@ -114,13 +114,20 @@ void Uc8253MurphyDriver::writeOldPlane(EpdBus& bus, const uint8_t* old, const ui
   });
 }
 
-void Uc8253MurphyDriver::triggerRefresh(EpdBus& bus, bool turnOff) {
+void Uc8253MurphyDriver::triggerRefresh(EpdBus& bus, bool turnOff, bool asyncStart) {
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
     bus.waitBusy(" M3_PON");
     _isScreenOn = true;
   }
   bus.cmd(CMD_DISPLAY_REFRESH);
+  if (asyncStart) {
+    // The waveform is in flight; displayFinish() waits it out (and powers down
+    // when asked). Recorded before the caller can issue any other bus op.
+    _asyncRefreshInFlight = true;
+    _pendingTurnOff = turnOff;
+    return;
+  }
   bus.waitBusy(" M3_DRF");
   if (turnOff) {
     bus.cmd(CMD_POWER_OFF);
@@ -164,10 +171,55 @@ void Uc8253MurphyDriver::begin(EpdBus& bus) {
   _fastRefreshCount = 0;
   _grayOnGlass = false;
   _rolesTraded = false;
+  _asyncRefreshInFlight = false;
+  _pendingTurnOff = false;
+  _duShadowValid = false;  // the glass shows whatever the last firmware left; no baseline yet
   initController(bus);
 }
 
+uint8_t* Uc8253MurphyDriver::duShadowPlane() {
+  if (_duShadow == nullptr) {
+    const size_t size = static_cast<size_t>(_fbWb) * _fbH;
+    _duShadow = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM));
+    if (!_duShadow) _duShadow = static_cast<uint8_t*>(malloc(size));
+  }
+  return _duShadow;
+}
+
+void Uc8253MurphyDriver::rememberDuBaseline(const uint8_t* fb) {
+  // fb stays valid through this call on both paths: blocking callers redraw
+  // after display() returns, and the async contract holds the framebuffer
+  // until waitRefreshComplete().
+  if (duShadowPlane()) {
+    memcpy(_duShadow, fb, static_cast<size_t>(_fbWb) * _fbH);
+    _duShadowValid = true;
+  }
+}
+
 void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  displayImpl(bus, fb, prev, mode, turnOff, /*asyncStart=*/false);
+}
+
+bool Uc8253MurphyDriver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
+                                      bool turnOff) {
+  displayImpl(bus, fb, prev, mode, turnOff, /*asyncStart=*/true);
+  return _asyncRefreshInFlight;
+}
+
+void Uc8253MurphyDriver::displayFinish(EpdBus& bus, const uint8_t*) {
+  if (!_asyncRefreshInFlight) return;
+  _asyncRefreshInFlight = false;
+  bus.waitBusy(" M3_DRF");
+  if (_pendingTurnOff) {
+    _pendingTurnOff = false;
+    bus.cmd(CMD_POWER_OFF);
+    bus.waitBusy(" M3 power-down");
+    _isScreenOn = false;
+  }
+}
+
+void Uc8253MurphyDriver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
+                                     bool turnOff, bool asyncStart) {
   // Manufacturer guidance: hardware-reset and re-initialise the controller before
   // every refresh. The UC8253 retains LUT/RAM state between refreshes, and reusing
   // it leaves pixels half-latched (the previous frame bleeds through / flashes
@@ -190,22 +242,31 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
     _fastRefreshCount = 0;
   }
 
+  // The DU baseline: the host's previous frame when it supplies one (the
+  // facade's async shadow), otherwise the driver's own copy of the last frame
+  // written to the planes. Without either, a FAST would write DTM1 = DTM2, so
+  // every pixel pairs WW/BB and the FAST bank rests them: the panel keeps the
+  // old image with a one-frame VSH ghost of the new one. Fall back to the GC
+  // bank, which drives every pixel to its target.
+  const uint8_t* old = prev;
+  if (useFast && old == nullptr && _duShadowValid) old = _duShadow;
+  if (useFast && old == nullptr) useFast = false;
+
   loadLut(bus, useFast ? _cfg.fast : _cfg.def);
 
   // Full (GC) refresh writes the new frame to BOTH planes, so only WW/BB fire and
   // every pixel is fully driven to its target — clean, no half-flipped pixels.
   // FAST (DU) refresh is differential: old frame -> DTM1, new -> DTM2, so unchanged
   // pixels take WW/BB and changed pixels take the quick BW/WB transition kicks.
-  // Without a previous frame (single-buffer builds) fall back to both-planes-new.
-  const uint8_t* old = useFast && prev != nullptr ? prev : fb;
   if (useFast && _grayOnGlass) {
     writeOldPlane(bus, old, fb);
   } else {
-    writePlane(bus, CMD_DTM1, old);
+    writePlane(bus, CMD_DTM1, useFast ? old : fb);
   }
   writePlane(bus, CMD_DTM2, fb);
+  rememberDuBaseline(fb);
 
-  triggerRefresh(bus, turnOff);
+  triggerRefresh(bus, turnOff, asyncStart);
   _grayOnGlass = false;  // both paths above drove every gray pixel to a rail
   _rolesTraded = !turnOff;
 }
@@ -259,6 +320,7 @@ void Uc8253MurphyDriver::displayGray(EpdBus& bus, const uint8_t*, bool turnOff, 
 
 void Uc8253MurphyDriver::deepSleep(EpdBus& bus) {
   _rolesTraded = false;
+  _duShadowValid = false;  // wake is a fresh boot; no valid baseline until the first refresh
   if (_isScreenOn) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" M3 power-down");

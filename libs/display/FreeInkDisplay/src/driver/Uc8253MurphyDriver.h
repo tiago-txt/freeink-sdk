@@ -15,8 +15,19 @@
 // refresh is differential: previous frame -> DTM1 (old), new frame -> DTM2 (new),
 // so unchanged pixels take WW/BB and changed pixels take the quick BW/WB transition
 // kicks. FAST ghosts over time, and the host decides when to ask for a full refresh; a config can
-// set ghostClearInterval to have the driver promote one instead. Without a previous frame (single-buffer
-// builds) the fast path falls back to both-planes-new (WW/BB only).
+// set ghostClearInterval to have the driver promote one instead.
+//
+// The DU baseline comes from the host when it has one (the facade's async shadow),
+// or from the driver's own copy of the last frame written to the planes — the
+// controller does not retain a usable host view of the displayed image. Without
+// any baseline (first refresh after begin/deepSleep) a FAST falls back to the GC
+// bank: DTM1 = DTM2 makes every pair WW/BB, and the FAST bank rests those, which
+// would leave the old image on the glass with a one-frame VSH ghost of the new
+// one.
+//
+// The async split (displayStart/displayFinish) lets the facade overlap the host's
+// next-page CPU work with the panel's refresh; the deferred finish only waits out
+// the BUSY waveform (and the optional power-off), so the same flow serves both.
 //
 // Gray, with -DFREEINK_MURPHY_GRAY: the host draws gray pixels black in the B/W
 // page, then one short nudge lifts them (see lut/Uc8253MurphyLuts.h). A later FAST
@@ -72,6 +83,12 @@ class Uc8253MurphyDriver : public PanelDriver {
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  // Async split: displayStart loads RAM, fires the waveform, and returns true
+  // with the waveform in flight; displayFinish waits it out (plus the optional
+  // power-off). Lets the facade overlap host work with the panel refresh.
+  bool supportsAsyncDisplay() const override { return true; }
+  bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  void displayFinish(EpdBus& bus, const uint8_t* fb) override;
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode != GrayscaleMode::Overlay || !_cfg.gray.vcom) return {};
     return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
@@ -84,12 +101,16 @@ class Uc8253MurphyDriver : public PanelDriver {
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
 
  private:
+  void displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,
+                   bool asyncStart);
   void initController(EpdBus& bus);
   void loadLut(EpdBus& bus, const Uc8253MurphyLutBank& bank);
   void writePlane(EpdBus& bus, uint8_t command, const uint8_t* fb);  // rotates 416x240 fb -> 240x416 RAM
   void writeOldPlane(EpdBus& bus, const uint8_t* old, const uint8_t* fb);  // `old`, gray pixels marked changed
-  void triggerRefresh(EpdBus& bus, bool turnOff);
+  void triggerRefresh(EpdBus& bus, bool turnOff, bool asyncStart = false);
   uint8_t* grayPlane(uint8_t*& plane);
+  uint8_t* duShadowPlane();
+  void rememberDuBaseline(const uint8_t* fb);
 
   const Uc8253MurphyConfig& _cfg;
 
@@ -99,6 +120,16 @@ class Uc8253MurphyDriver : public PanelDriver {
 
   bool _isScreenOn = false;
   uint8_t _fastRefreshCount = 0;
+
+  // Deferred-work state for the async split (see displayStart/displayFinish).
+  bool _asyncRefreshInFlight = false;
+  bool _pendingTurnOff = false;
+
+  // Driver-tracked DU baseline for hosts that pass prev == nullptr on
+  // blocking calls (single-buffer builds): the last frame written to the
+  // planes. PSRAM-backed like the gray planes; one 12.5 KB allocation.
+  uint8_t* _duShadow = nullptr;
+  bool _duShadowValid = false;
 
   // A plane arrives in the write framebuffer, which the next plane overwrites, and every refresh
   // starts with a reset, so both wait here for displayGray(). Allocated on the first gray pass.
