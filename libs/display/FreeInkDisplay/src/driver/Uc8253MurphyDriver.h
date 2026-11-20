@@ -86,7 +86,15 @@ class Uc8253MurphyDriver : public PanelDriver {
   // Async split: displayStart loads RAM, fires the waveform, and returns true
   // with the waveform in flight; displayFinish waits it out (plus the optional
   // power-off). Lets the facade overlap host work with the panel refresh.
-  bool supportsAsyncDisplay() const override { return true; }
+  //
+  // OFF for the current facade generation: the 9d5bba3 single-buffer async
+  // contract (shadow ownership, seedPreviousFrame, deferred finish) does not
+  // line up with this driver's host-side baseline — FAST refreshes compared
+  // against a stale plane and only ever darkened. The blocking path below is
+  // the proven one: the facade calls display() with the differential baseline
+  // resolved synchronously, and the driver's own _duShadow covers hosts that
+  // pass prev == nullptr.
+  bool supportsAsyncDisplay() const override { return false; }
   bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   void displayFinish(EpdBus& bus, const uint8_t* fb) override;
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
